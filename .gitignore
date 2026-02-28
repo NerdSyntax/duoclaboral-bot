@@ -1,0 +1,10 @@
+.env
+*.db
+__pycache__/
+*.pyc
+.playwright/
+session_state.json
+perfil.json
+*.html
+*.png
+*.log
