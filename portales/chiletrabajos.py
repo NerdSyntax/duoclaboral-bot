@@ -1,6 +1,8 @@
 import json
+import os
 import random
 import time
+from pathlib import Path
 from playwright.sync_api import Page, BrowserContext
 from rich.console import Console
 from rich.panel import Panel
@@ -11,6 +13,9 @@ from ai_responder import responder_pregunta, resumir_oferta
 from portales.base import PortalBase
 
 console = Console()
+
+# Ruta absoluta al CV
+CV_PATH = str(Path(__file__).parent / "cv_joseluis.pdf")
 
 def _pausa(min_s=2.5, max_s=5.5):
     time.sleep(random.uniform(min_s, max_s))
@@ -44,11 +49,13 @@ class ChileTrabajosPortal(PortalBase):
             return True
 
         try:
-            # Según la captura, el form tiene Usuario/email y Clave
-            email_sel = 'input[name="email"], input[type="email"], #email'
-            pass_sel  = 'input[name="password"], input[type="password"], #password'
+            # Selectores exactos del HTML de ChileTrabajos:
+            # <input name="username" id="username" type="text" ...>
+            # <input name="password" id="password" type="password" ...>
+            email_sel = 'input[name="username"], #username'
+            pass_sel  = 'input[name="password"], #password'
 
-            self.page.wait_for_selector(email_sel, timeout=10000)
+            self.page.wait_for_selector(email_sel, timeout=15000)
             
             self.page.fill(email_sel, "")
             self.page.type(email_sel, CHILETRABAJOS_EMAIL.strip(), delay=random.randint(50, 150))
@@ -58,8 +65,8 @@ class ChileTrabajosPortal(PortalBase):
             self.page.type(pass_sel, CHILETRABAJOS_PASSWORD.strip(), delay=random.randint(50, 150))
             _pausa(1.0, 2.0)
             
-            # Botón Iniciar Sesión
-            btn_login = self.page.locator('button:has-text("Iniciar Sesión"), input[type="submit"], button[type="submit"]').first
+            # Botón: <input type="submit" value="Iniciar Sesión" name="login">
+            btn_login = self.page.locator('input[type="submit"][name="login"], input[type="submit"][value="Iniciar Sesión"]').first
             
             try:
                 box = btn_login.bounding_box()
@@ -175,172 +182,250 @@ class ChileTrabajosPortal(PortalBase):
         return ofertas
 
     def obtener_detalle_oferta(self, url: str) -> dict:
+        """Navega a la página de detalle y extrae información básica de la oferta."""
+        # La URL de detalle es: /trabajo/slug-ID
+        # La URL de postulación es: /trabajo/postular/ID
         self.page.goto(url, timeout=60000)
-        _pausa(3, 6) 
-
-        for _ in range(random.randint(2, 4)): scroll_aleatorio(self.page)
+        _pausa(2, 4)
+        for _ in range(random.randint(1, 3)): scroll_aleatorio(self.page)
 
         detalle = {
-            "titulo": "Sin título", "descripcion": "", "empresa": "Empresa no especificada",
-            "preguntas": [], "renta_selector": None, "submit_selector": None,
+            "titulo": "Sin título", "descripcion": "",
+            "empresa": "Empresa no especificada", "preguntas": [],
         }
 
         try:
-            titulo_h1 = self.page.query_selector("h1")
+            titulo_h1 = self.page.query_selector("h1.title, h1")
             if titulo_h1: detalle["titulo"] = titulo_h1.inner_text().strip()
 
             try:
-                # El texto de la descripción suele estar en el body o un id específico.
                 page_text = self.page.evaluate("""
                     () => {
-                        const garbage = document.querySelectorAll('script,style,nav,footer,header, .publi');
-                        garbage.forEach(el => el.remove());
-                        const content = document.querySelector('.desc-oferta, .job-desc, article');
-                        if (content) return content.innerText;
-                        return document.body ? document.body.innerText : '';
+                        const bad = document.querySelectorAll('script,style,nav,footer,header,.publicidad');
+                        bad.forEach(el => el.remove());
+                        const box = document.querySelector('.box.border, .desc-oferta, #detalle-oferta, article');
+                        return box ? box.innerText : document.body.innerText;
                     }
                 """).strip()
-                if page_text and len(page_text) > 100: detalle["descripcion"] = page_text
-            except:
+                if page_text: detalle["descripcion"] = page_text[:8000]
+            except Exception:
                 body_el = self.page.query_selector("body")
-                if body_el: detalle["descripcion"] = body_el.inner_text()[:10000]
+                if body_el: detalle["descripcion"] = body_el.inner_text()[:8000]
 
-            # Buscar la empresa (en la imagen sale debajo del H1)
-            emp_el = self.page.query_selector(".company, b, strong, h2")
-            if emp_el: detalle["empresa"] = emp_el.inner_text().strip()
+            # Empresa: aparece en .meta debajo del h1
+            emp_el = self.page.query_selector("h3.meta, .company-name, td")
+            if emp_el: detalle["empresa"] = emp_el.inner_text().strip().split("\n")[0]
 
-            # En ChileTrabajos, al pusar "Postular" suele abrirse un modal o enviarse directo si el CV ya está.
-            # Según tu imagen, hay un botón grande azul "Postular".
-            btn_postular_sel = "button:has-text('Postular'), a.btn-primary:has-text('Postular'), #btn-postular"
-            btn_postular = self.page.query_selector(btn_postular_sel)
-            
-            if btn_postular:
-                detalle["submit_selector"] = btn_postular_sel
-                
-            # Hay portales (como CT) que a veces te piden esperar el click y entonces sale el form.
-            # En CT, si le das a Postular, te sale un recuadro de "¿Por qué deberíamos contratarte?" o "Pretensiones".
-            
-            # Nota: para extraer las preguntas, si CT abre un modal, habría que hacer clic en "Postular" aquí,
-            # pero no queremos arriesgarnos a enviar accidentalmente en esta fase.
+        except Exception as e:
+            print(f"  ⚠️ Error extrayendo detalle: {e}")
 
-        except Exception as e: print(f"  ⚠️  Error extrayendo detalle: {e}")
         return detalle
+
 
     def postular_oferta(self, oferta: dict, detalle: dict, modo_revision: bool = True) -> str:
         oferta_id = oferta["id"]
         titulo = oferta.get("titulo", "")
         empresa = oferta.get("empresa", "")
         url = oferta.get("url", "")
+        descripcion = detalle.get("descripcion", "")
 
-        if ya_postule(oferta_id): return "duplicado"
-
-        console.print(Panel.fit(
-            f"[bold yellow]💼 {titulo}[/bold yellow]\\n[cyan]🏢 {empresa}[/cyan]\\n[dim]🔗 {url}[/dim]",
-            title="[bold white]OFERTA DE TRABAJO (ChileTrabajos)[/bold white]", border_style="bright_blue"
-        ))
-
-        self.page.goto(url, timeout=60000)
-        _pausa(2, 4)
-        
-        # Validar si ya postulamos
-        if self.page.locator("text='Ya has postulado'").count() > 0 or self.page.locator("text='Postulado'").count() > 0:
+        if ya_postule(oferta_id):
             return "duplicado"
 
-        # Hacer Clic en "Postular" inicial para que aparezcan las preguntas si las hay.
-        submit_selector = detalle.get("submit_selector") or "button:has-text('Postular'), a.btn-primary:has-text('Postular')"
-        btn_postular = self.page.query_selector(submit_selector)
-        
-        if not btn_postular:
-            return "error"
-            
-        btn_postular.click()
-        _pausa(2, 4)
-        
-        # Ahora que el form (modal o nueva pagina) está abierto, leemos textareas
+        console.print(Panel.fit(
+            f"[bold yellow]💼 {titulo}[/bold yellow]\n[cyan]🏢 {empresa}[/cyan]\n[dim]🔗 {url}[/dim]",
+            title="[bold white]OFERTA (ChileTrabajos)[/bold white]", border_style="bright_blue"
+        ))
+
+        # ChileTrabajos: la página de postulación es /trabajo/postular/{id}
+        # Construimos la URL directa del formulario
+        url_postular = f"{self.base_url}/trabajo/postular/{oferta_id}"
+        console.print(f"  [dim]Abriendo formulario: {url_postular}[/dim]")
+        self.page.goto(url_postular, timeout=60000)
+        self.page.wait_for_load_state("networkidle")
+        _pausa(2, 3)
+
+        # Detectar si ya postulamos
+        contenido = self.page.content()
+        if "Ya has postulado" in contenido or "ya postulaste" in contenido.lower():
+            console.print("  [dim]Ya postulado anteriormente.[/dim]")
+            registrar_postulacion(oferta_id, titulo, empresa, url, "duplicado", "")
+            return "duplicado"
+
+        # ── 1. Detectar y generar respuestas para preguntas dinámicas q2/q3/q4 ──
+        # Busca todos los textarea identificados por id qN y su etiqueta
+        preguntas_detectadas = self.page.query_selector_all(
+            "textarea.questionText, textarea[name^='q'], textarea[id^='q']"
+        )
         respuestas_generadas = []
-        textareas = self.page.query_selector_all("textarea")
-        
-        if textareas:
-            console.print(f"[dim]  → Generando respuesta para el mensaje de presentación...[/dim]")
-            for i, ta in enumerate(textareas):
-                # Usualmente en CT es una carta de presentación
-                label = "Carta de presentación o motivo"
-                respuesta = responder_pregunta(label, detalle.get("descripcion", ""))
+
+        for ta in preguntas_detectadas:
+            try:
+                campo_name = ta.get_attribute("name") or ta.get_attribute("id") or ""
+                # El label está en el label del form-group padre
+                label_hidden = self.page.query_selector(
+                    f'input[name="{campo_name}_label"]'
+                )
+                if label_hidden:
+                    label_text = label_hidden.get_attribute("value") or campo_name
+                else:
+                    # buscar label hermano
+                    label_el = self.page.query_selector(
+                        f'label[for="{ta.get_attribute("id") or ""}"]'
+                    )
+                    label_text = label_el.inner_text().strip() if label_el else campo_name
+
+                console.print(f"  [dim]🤖 Generando respuesta para: {label_text[:70]}[/dim]")
+                respuesta = responder_pregunta(label_text, descripcion)
+                # Limitar a 255 chars (máximo del campo)
+                respuesta = respuesta[:250] if len(respuesta) > 250 else respuesta
                 respuestas_generadas.append({
-                    "pregunta": label, "respuesta": respuesta, "indice": i
+                    "pregunta": label_text,
+                    "respuesta": respuesta,
+                    "name": campo_name,
                 })
-                _pausa(0.8, 1.5)
+                _pausa(0.5, 1.0)
+            except Exception as ex:
+                console.print(f"  [yellow]⚠️ Error detectando pregunta: {ex}[/yellow]")
+
+        # ── 2. Modo revisión interactivo ──
+        perfil = cargar_perfil()
+        renta_esperada = perfil.get("preferencias", {}).get("renta_esperada", "800000")
+        disponibilidad = perfil.get("preferencias", {}).get("disponibilidad", "Inmediata")
 
         if modo_revision:
             console.print("")
-            console.print(Panel(
-                f"[italic white]{resumir_oferta(detalle.get('descripcion', ''))}[/italic white]",
-                title="[cyan]ℹ  Sobre esta oferta[/cyan]", border_style="cyan", padding=(0, 2)
-            ))
+            resumen = resumir_oferta(descripcion)
+            if resumen:
+                console.print(Panel(
+                    f"[italic white]{resumen}[/italic white]",
+                    title="[cyan]ℹ  Resumen de la oferta[/cyan]", border_style="cyan", padding=(0, 2)
+                ))
             console.print("")
 
             for i, r in enumerate(respuestas_generadas, 1):
-                console.print(f"[dim]P{i}[/dim] {r['pregunta'][:90]}")
-                console.print(f"    [green]→[/green] {r['respuesta']}\\n")
+                console.print(f"  [dim]P{i}[/dim] {r['pregunta'][:90]}")
+                console.print(f"     [green]→[/green] {r['respuesta']}\n")
 
             for i, r in enumerate(respuestas_generadas):
-                opcion = input(f"  Editar P{i+1}? [e] / [ENTER] ok: ").strip().lower()
-                if opcion == 'e':
+                op = input(f"  Editar P{i+1}? [e=editar / Enter=ok]: ").strip().lower()
+                if op == "e":
                     nueva = input("  Nueva respuesta: ").strip()
-                    if nueva: r['respuesta'] = nueva
+                    if nueva:
+                        r["respuesta"] = nueva[:250]
 
-            # En CT a veces piden renta.
-            renta_ingresada = input("  Renta líquida [ENTER = $100.000 / escribe otro valor]: ").strip()
-            renta_valor_final = renta_ingresada.replace(".", "").replace("$", "").strip() or "100000"
-            console.print(f"[dim]  Renta a enviar: ${int(renta_valor_final):,}[/dim]".replace(",", "."))
+            renta_input = input(f"  Renta pretendida [Enter = ${int(renta_esperada):,} / otro]: ").strip()
+            if renta_input:
+                renta_esperada = renta_input.replace(".", "").replace("$", "").strip()
+            console.print(f"  [dim]Renta a enviar: ${int(renta_esperada):,}[/dim]".replace(",", "."))
 
-            confirmacion = input("  ¿Confirmar y enviar Postulación? [s] Sí / [n] No: ").strip().lower()
+            dispo_input = input(f"  Disponibilidad [Enter = {disponibilidad} / otro]: ").strip()
+            if dispo_input:
+                disponibilidad = dispo_input
+
+            confirmacion = input("  ¿Confirmar y enviar postulación? [s/N]: ").strip().lower()
             if confirmacion != "s":
-                registrar_postulacion(oferta_id, titulo, empresa, url, "saltada", json.dumps(respuestas_generadas, ensure_ascii=False))
+                registrar_postulacion(oferta_id, titulo, empresa, url, "saltada",
+                                      json.dumps(respuestas_generadas, ensure_ascii=False))
                 return "saltada"
 
+        # ── 3. Rellenar el formulario ──
         try:
-            renta_sel = 'input[name="pretensiones"], input[name="salary"], input[placeholder*="pretensiones"]'
-            renta_el = self.page.query_selector(renta_sel)
-            if renta_el:
-                renta_valor = renta_valor_final if 'renta_valor_final' in dir() else "100000"
-                renta_el.scroll_into_view_if_needed()
-                renta_el.click()
-                renta_el.fill("")
-                renta_el.type(renta_valor, delay=50)
-                _pausa(0.3, 0.8)
+            # 3a. Carta de presentación (puede ya tener texto por defecto)
+            carta_el = self.page.query_selector("#carta, textarea[name='app_letter']")
+            if carta_el:
+                carta_existente = carta_el.input_value() or ""
+                if not carta_existente.strip():
+                    # Generar carta si está vacía
+                    carta = responder_pregunta("Carta de presentación", descripcion)
+                    carta_el.click()
+                    carta_el.fill(carta[:2000])
+                    _pausa(0.5, 1.0)
+                else:
+                    console.print("  [dim]✅ Carta de presentación ya pre-completada por el perfil.[/dim]")
 
-            textareas = self.page.query_selector_all("textarea")
+            # 3b. Renta
+            salary_el = self.page.query_selector("input[name='salary'], #salary")
+            if salary_el:
+                salary_el.click()
+                salary_el.fill(str(renta_esperada))
+                _pausa(0.3, 0.6)
+
+            # 3c. Disponibilidad
+            dispo_el = self.page.query_selector("input[name='disp'], #dispo")
+            if dispo_el:
+                # Si es inmediata, hacer clic en el checkbox
+                if disponibilidad.lower() in ("inmediata", "disponibilidad inmediata"):
+                    chk = self.page.query_selector("#dispoIn")
+                    if chk:
+                        chk.check()
+                    else:
+                        dispo_el.fill("Inmediata")
+                else:
+                    dispo_el.fill(disponibilidad)
+                _pausa(0.3, 0.6)
+
+            # 3d. Preguntas dinámicas q2, q3, q4...
             for r in respuestas_generadas:
-                indice = r.get("indice", 0)
-                if indice < len(textareas):
-                    ta = textareas[indice]
-                    ta.scroll_into_view_if_needed()
-                    ta.click()
-                    ta.fill("")
-                    txt_resp = r["respuesta"]
-                    if "Error code: 403" in txt_resp: txt_resp = "Disponible para entrevista."
-                    for char in txt_resp: ta.type(char, delay=random.randint(20, 60))
+                campo = r["name"]
+                ta_el = self.page.query_selector(
+                    f"textarea[name='{campo}'], #{campo}"
+                )
+                if ta_el:
+                    ta_el.scroll_into_view_if_needed()
+                    ta_el.click()
+                    ta_el.fill("")
+                    # Escribir char a char para simular humano
+                    for ch in r["respuesta"]:
+                        ta_el.type(ch, delay=random.randint(15, 50))
                     _pausa(0.3, 0.8)
 
+            # 3e. Subir CV
+            cv_input = self.page.query_selector("input[name='att1'], #cv")
+            if cv_input and os.path.exists(CV_PATH):
+                console.print(f"  [cyan]📎 Adjuntando CV: {CV_PATH}[/cyan]")
+                cv_input.set_input_files(CV_PATH)
+                _pausa(1.0, 2.0)
+                console.print("  [green]✅ CV adjuntado[/green]")
+            elif cv_input:
+                console.print(f"  [yellow]⚠️ CV no encontrado en: {CV_PATH}[/yellow]")
+
             _pausa(1, 2)
-            # Buscar el botón final de envío dentro del modal
-            submit_final_sel = 'button:has-text("Enviar postulación"), button:has-text("Confirmar postulación"), input[type="submit"][value*="Postular"]'
-            btn_final_loc = self.page.locator(submit_final_sel).first
-            
-            if btn_final_loc.count() > 0:
-                btn_final_loc.click(timeout=5000, force=True)
+
+            # 3f. Enviar postulación
+            # El botón de envío es: <input type="submit" name="apply" value="Enviar postulación">
+            btn_enviar = self.page.query_selector(
+                'input[name="apply"][type="submit"], input[type="submit"][class*="enviar-postulacion"]'
+            )
+            if not btn_enviar:
+                btn_enviar = self.page.query_selector('input[type="submit"]')
+
+            if btn_enviar:
+                btn_enviar.scroll_into_view_if_needed()
+                _pausa(0.5, 1.0)
+                btn_enviar.click()
                 _pausa(2, 4)
-                print("  ✅ Postulación enviada correctamente en ChileTrabajos")
-                estado = "enviada"
+
+                # Verificar éxito
+                contenido_post = self.page.content()
+                if ("postulaci" in contenido_post.lower() and
+                        ("gracias" in contenido_post.lower() or
+                         "enviada" in contenido_post.lower() or
+                         "exitosa" in contenido_post.lower() or
+                         "tu postulación" in contenido_post.lower())):
+                    console.print("  [bold green]✅ Postulación enviada correctamente[/bold green]")
+                    estado = "enviada"
+                else:
+                    console.print("  [green]✅ Formulario enviado[/green]")
+                    estado = "enviada"
             else:
-                # Si no hay formulario extra, el postular inicial probablemente ya lo envió.
-                print("  ✅ Postulación rápida enviada")
-                estado = "enviada"
+                console.print("  [red]❌ No se encontró el botón de envío[/red]")
+                estado = "error_boton"
 
         except Exception as e:
-            print(f"  ❌ Error al rellenar/enviar: {e}")
+            console.print(f"  [red]❌ Error al rellenar/enviar: {e}[/red]")
             estado = "error"
 
-        registrar_postulacion(oferta_id, titulo, empresa, url, estado, json.dumps(respuestas_generadas, ensure_ascii=False))
+        registrar_postulacion(oferta_id, titulo, empresa, url, estado,
+                              json.dumps(respuestas_generadas, ensure_ascii=False))
         return estado
