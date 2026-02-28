@@ -83,12 +83,20 @@ OFERTA DE TRABAJO A LA QUE POSTULAS:
 {descripcion_oferta if descripcion_oferta else "(Oferta general)"}
 
 INSTRUCCIONES CLAVES Y ESTRICTAS:
-1. REGLA ESTRICTA 1 (Práctica): Si te preguntan por "horas", "práctica", "¿Cuántas horas exige...?" responde EXACTAMENTE: "Actualmente busco una práctica para aprender y ganar experiencia en el rubro, las horas pueden ser negociables según los requerimientos de la empresa."
-2. REGLA ESTRICTA 2 (Seguro): Si te preguntan por "seguro escolar", "seguro de salud", responde EXACTAMENTE: "Sí, Duoc UC cuenta con un seguro estudiantil que me cubre completamente durante el transcurso de la carrera ante cualquier eventualidad médica."
-3. REGLA ESTRICTA 3 (Personalidad): JAMÁS digas "el perfil del candidato", "no se proporciona", "no tengo esta información". Si no sabes algo específico, asume una actitud de rápida adaptabilidad. Ejemplo: "No poseo esa herramienta específica actualmente, pero aprenderé rápido según los requerimientos." o "Tengo total disponibilidad para trasladarme o adaptarme a la comuna requerida."
-4. Sé directo, seguro y profesional. Máximo 1 o 2 oraciones, ve al grano.
-5. NO uses introducciones, saludos, despedidas, ni comillas. Solo entrega la respuesta cruda para pegarla en el formulario de la empresa.
-6. Cero emojis.
+1. REGLA ESTRICTA 1 (Práctica/Horas): Si preguntan por "horas", "práctica", "¿Cuántas horas...?" responde EXACTAMENTE: "Actualmente busco una práctica para aprender y ganar experiencia en el rubro, las horas pueden ser negociables según los requerimientos de la empresa."
+2. REGLA ESTRICTA 2 (Seguro): Si preguntan por "seguro escolar" o "seguro de salud" responde EXACTAMENTE: "Sí, Duoc UC cuenta con un seguro estudiantil que me cubre completamente durante el transcurso de la carrera ante cualquier eventualidad médica."
+3. REGLA ESTRICTA 3 (Personalidad): JAMÁS digas "el perfil del candidato", "no se proporciona", "no tengo esta información". Si no sabes algo, responde de forma adaptable y natural.
+4. REGLA ESTRICTA 4 (Inglés): Si preguntan por "inglés", "idioma", "english" responde EXACTAMENTE: "Poseo un nivel intermedio de inglés, me desenvuelvo con lectura técnica y comunicación básica en el idioma."
+5. REGLA ESTRICTA 5 (Excel): Si preguntan por "Excel", "planilla", nivel Excel responde EXACTAMENTE: "Cuento con conocimientos intermedios-básicos en Excel: manejo filtros, gráficos, tablas dinámicas y fórmulas básicas. Además tengo nociones de Power BI."
+6. REGLA ESTRICTA 6 (Horario/Disponibilidad): Si preguntan por un horario específico, disponibilidad de días/horas, o jornada de trabajo, responde EXACTAMENTE: "Actualmente me encuentro cursando mi carrera en Duoc UC y mi disponibilidad horaria puede variar. Para coordinar horarios específicos, te invito a contactarme directamente por correo a jose.oporto.va@gmail.com o por WhatsApp al +56944399872."
+7. REGLA ESTRICTA 7 (Variedad al no saber): Cuando no tengas experiencia con una herramienta o tecnología específica, NUNCA uses la misma frase dos veces en el mismo formulario. Varía la forma de expresar adaptabilidad usando diferentes expresiones como:
+   - "Aunque no he trabajado directamente con [tecnología], tengo una base sólida en tecnologías similares y aprendo rápido."
+   - "No tengo experiencia práctica en [tecnología], pero cuento con la capacidad para adaptarme y aprenderla en poco tiempo."
+   - "Si bien no he utilizado [tecnología] en contextos laborales, manejo conceptos relacionados y estoy abierto a capacitarme."
+   - "Mi experiencia con [tecnología] es básica, pero me comprometo a desarrollar ese conocimiento según las necesidades del equipo."
+   Elige la variación que suene más natural para esa pregunta específica.
+8. Máximo 2 oraciones. Sin introducciones, saludos, despedidas ni comillas. Solo la respuesta directa.
+9. Cero emojis.
 
 PREGUNTA DE LA EMPRESA:
 {pregunta}
@@ -104,7 +112,7 @@ TU RESPUESTA COMO JOSÉ OPORTO:"""
             chat_completion = client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model="llama-3.3-70b-versatile",
-                temperature=0.7,
+                temperature=0.85,
                 max_tokens=256
             )
             return chat_completion.choices[0].message.content.strip()
@@ -122,6 +130,56 @@ TU RESPUESTA COMO JOSÉ OPORTO:"""
             return f"[Error al generar respuesta: {e}]"
     
     return "Disponible para ampliar cualquier detalle sobre mi perfil en una entrevista personal."
+
+
+def resumir_oferta(descripcion: str) -> str:
+    """
+    Genera un resumen claro y bien estructurado de la oferta de trabajo.
+    Devuelve vietas de: Rol, Funciones principales y Requerimientos clave.
+    """
+    if not descripcion or len(descripcion.strip()) < 50:
+        return "No se encontró descripción detallada para esta oferta."
+
+    desc_completa = descripcion.strip()
+    # Limitar a 6000 chars para no exceder el contexto del modelo
+    if len(desc_completa) > 6000:
+        desc_completa = desc_completa[:6000] + "\n[...texto recortado por longitud...]"
+
+    prompt = f"""Resume esta oferta laboral de forma ESTRUCTURADA, BREVE y SIN REDUNDANCIAS. Usa las siguientes secciones si la información aparece en el texto (si no aparece, omite la sección):
+
+💼 CARGO: (una sola línea exacta del texto)
+📝 FUNCIONES: (máximo 3 - 4 funciones reales del texto, separadas por " | ")
+🔧 REQUISITOS: (máximo 3 - 4 requisitos o herramientas del texto, separados por " | ")
+📅 CONDICIONES: (jornada, lugar, horario si aparece en el texto)
+
+REGLAS ESTRICTAS:
+- Solo incluye lo que está literalmente en el texto. Jamas inventes.
+- Cada sección en UNA SOLA LÍNEA. Evita oraciones largas.
+- Si una sección no tiene información explícita en el texto, NO la incluyas.
+
+--- TEXTO DE LA OFERTA ---
+{desc_completa}
+--- FIN ---
+
+Resumen:"""
+
+    for intento in range(2):
+        try:
+            time.sleep(1.0)
+            client = _get_client()
+            chat = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.1-8b-instant",
+                temperature=0.3,
+                max_tokens=600
+            )
+            return chat.choices[0].message.content.strip()
+        except Exception as e:
+            if intento < 1:
+                time.sleep(3)
+                continue
+            return f"(No se pudo generar el resumen: {e})"
+    return "(Resumen no disponible)"
 
 
 def evaluar_oferta_relevancia(titulo: str, descripcion: str) -> tuple[bool, str]:

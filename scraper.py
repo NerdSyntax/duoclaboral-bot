@@ -340,10 +340,23 @@ def obtener_detalle_oferta(page: Page, url: str) -> dict:
         if titulo_h1:
             detalle["titulo"] = titulo_h1.inner_text().strip()
 
-        # Descripción general
-        desc_el = page.query_selector(".job-description, .oferta-descripcion, .description, main p, #job-description, .body-job")
-        if desc_el:
-            detalle["descripcion"] = desc_el.inner_text()[:2000]
+        # Descripción: capturamos TODO el texto visible de la página para la IA
+        try:
+            # Primero intentamos el contenedor de oferta específico
+            page_text = page.evaluate("""
+                () => {
+                    // Eliminar scripts, estilos y nav de la muestra
+                    const garbage = document.querySelectorAll('script,style,nav,footer,header');
+                    garbage.forEach(el => el.remove());
+                    return document.body ? document.body.innerText : '';
+                }
+            """).strip()
+            if page_text and len(page_text) > 100:
+                detalle["descripcion"] = page_text
+        except Exception:
+            body_el = page.query_selector("body")
+            if body_el:
+                detalle["descripcion"] = body_el.inner_text()[:10000]
 
         # Empresa
         emp_el = page.query_selector(".company-name, .empresa, h2.company, .job-company, h2, .companyTitle")

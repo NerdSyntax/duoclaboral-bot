@@ -6,8 +6,11 @@ import time
 import random
 from playwright.sync_api import Page
 from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 from config import cargar_perfil
-from ai_responder import responder_pregunta
+from ai_responder import responder_pregunta, resumir_oferta
 from database import ya_postule, registrar_postulacion
 
 console = Console()
@@ -49,13 +52,13 @@ def postular_oferta(page: Page, oferta: dict, detalle: dict,
         # Ya no debería llegar aquí si main.py lo filtra antes, pero mantenemos por seguridad
         return "duplicado"
 
-    print(f"\n{'='*60}")
-    print(f"  💼 [bold yellow]CARGO   :[/bold yellow] {titulo}")
-    print(f"  🏢 [bold cyan]EMPRESA :[/bold cyan] {empresa}")
-    print(f"  🔗 [dim]LINK OFERTA:[/dim] {url}")
-    # Nota: El link de la empresa a veces no está disponible directamente como URL externa
-    # pero mostramos la de la postulación que es lo que importa.
-    print(f"{'='*60}")
+    console.print(Panel.fit(
+        f"[bold yellow]💼 {titulo}[/bold yellow]\n"
+        f"[cyan]🏢 {empresa}[/cyan]\n"
+        f"[dim]🔗 {url}[/dim]",
+        title="[bold white]OFERTA DE TRABAJO[/bold white]",
+        border_style="bright_blue"
+    ))
 
     # Navegar a la oferta
     page.goto(url, timeout=60000)
@@ -82,54 +85,56 @@ def postular_oferta(page: Page, oferta: dict, detalle: dict,
     preguntas = detalle.get("preguntas", [])
 
     if preguntas:
-        console.print(f"\n[bold magenta]🤖 IA GENERANDO RESPUESTAS ({len(preguntas)})[/bold magenta]")
-        for i, p in enumerate(preguntas):
+        console.print(f"[dim]  → Generando {len(preguntas)} respuesta(s)...[/dim]")
+        for p in preguntas:
             label = p.get("label", "Pregunta")
-            console.print(f"\n[cyan]───────────────── Pregunta {i+1} ─────────────────[/cyan]")
-            console.print(f"[bold white]Texto:[/bold white] {label}")
-            console.print("[dim italic]Consultando a la IA...[/dim italic]")
-            
             respuesta = responder_pregunta(label, descripcion)
-            
-            console.print(f"[bold green]Respuesta IA:[/bold green]\n{respuesta}")
-            
             respuestas_generadas.append({
                 "pregunta": label,
                 "respuesta": respuesta,
                 "selector": p.get("selector"),
                 "indice": p.get("indice", 0),
             })
-            _pausa(0.8, 1.8)
+            _pausa(0.8, 1.5)
 
     # ── 3. Modo revisión ──────────────────────────────────────────────
     if modo_revision:
-        console.print("\n" + "═"*60)
-        console.print("  [bold yellow]📋 PANEL DE REVISIÓN FINAL[/bold yellow]")
-        console.print("═"*60)
-        
-        # Renta logic: SIEMPRE 100.000
-        console.print(f"  💰 [bold cyan]RENTA SOLICITADA:[/bold cyan] $100.000 (Valor fijo)")
+        # Resumen IA en prosa
+        console.print("")
+        resumen_oferta_texto = resumir_oferta(descripcion)
+        console.print(Panel(
+            f"[italic white]{resumen_oferta_texto}[/italic white]",
+            title="[cyan]ℹ  Sobre esta oferta[/cyan]",
+            border_style="cyan",
+            padding=(0, 2)
+        ))
+        console.print("")
 
-        # Tabla de resumen de respuestas
+        # Respuestas compactas
+        for i, r in enumerate(respuestas_generadas, 1):
+            console.print(f"[dim]P{i}[/dim] {r['pregunta'][:90]}")
+            console.print(f"    [green]→[/green] {r['respuesta']}\n")
+
+        # Edición
         for i, r in enumerate(respuestas_generadas):
-            console.print(f"\n[bold white]P{i+1}:[/bold white] {r['pregunta'][:100]}...")
-            console.print(f"[dim]R:[/dim] {r['respuesta']}")
-            
-            opcion = input(f"\n  ¿Editar P{i+1}? [e]ditar / [ENTER] ok: ").strip().lower()
+            opcion = input(f"  Editar P{i+1}? [e] / [ENTER] ok: ").strip().lower()
             if opcion == 'e':
-                console.print("  [yellow]Escribe la nueva respuesta:[/yellow]")
-                nueva = input("  > ").strip()
+                nueva = input("  Nueva respuesta: ").strip()
                 if nueva:
                     r['respuesta'] = nueva
-                    console.print("  [green]✅ OK.[/green]")
 
-        print("\n" + "─"*60)
-        confirmacion = input("  ¿Enviar postulación ahora? [s/N]: ").strip().lower()
+        # Renta editable
+        renta_ingresada = input("  Renta líquida [ENTER = $100.000 / escribe otro valor]: ").strip()
+        renta_valor_final = renta_ingresada.replace(".", "").replace("$", "").strip() or "100000"
+        console.print(f"[dim]  Renta a enviar: ${int(renta_valor_final):,}[/dim]".replace(",", "."))
+
+        confirmacion = input("  ¿Postular? [s] Sí / [n] No: ").strip().lower()
         if confirmacion != "s":
-            print("  ⏭  Postulación descartada.")
             registrar_postulacion(oferta_id, titulo, empresa, url, "saltada",
                                   json.dumps(respuestas_generadas, ensure_ascii=False))
             return "saltada"
+
+
 
         # 4. Rellenar el formulario ──────────────────────────────────────
         try:
@@ -164,7 +169,7 @@ def postular_oferta(page: Page, oferta: dict, detalle: dict,
 
             # Campo de renta esperada
             if renta_el:
-                renta_valor = "100000"
+                renta_valor = renta_valor_final if 'renta_valor_final' in dir() else "100000"
                 renta_el.scroll_into_view_if_needed()
                 renta_el.click()
                 renta_el.fill("")
