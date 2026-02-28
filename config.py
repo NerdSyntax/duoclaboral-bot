@@ -10,6 +10,8 @@ load_dotenv()
 # ── Credenciales ──────────────────────────────────────────
 DUOC_EMAIL    = os.getenv("DUOC_EMAIL", "")
 DUOC_PASSWORD = os.getenv("DUOC_PASSWORD", "")
+CHILETRABAJOS_EMAIL = os.getenv("CHILETRABAJOS_EMAIL", "")
+CHILETRABAJOS_PASSWORD = os.getenv("CHILETRABAJOS_PASSWORD", "")
 GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
 
 # ── URLs ──────────────────────────────────────────────────

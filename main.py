@@ -1,49 +1,119 @@
 """
-main.py — Script principal del bot de postulaciones DuocLaboral
+main.py — Bot multi-portal de postulaciones automáticas
+Portales soportados: DuocLaboral, ChileTrabajos (+ LinkedIn en el futuro)
 Uso: python main.py
 """
 import sys
+import json
+import random
+import time
+from playwright.sync_api import sync_playwright, BrowserContext
+
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich import box
 
-from config import validar_config, FILTROS, cargar_perfil
+from config import validar_config, FILTROS
 from database import inicializar_db, listar_postulaciones, total_postulaciones, ya_postule, registrar_postulacion
-from scraper import crear_browser, login, obtener_ofertas, obtener_detalle_oferta, aplicar_filtros_avanzados, OFERTAS_URL, _pausa
 from ai_responder import evaluar_oferta_relevancia
-from aplicador import postular_oferta
 
 console = Console()
 
+# ─────────────────────────────────────────────────────────────────
+#  BROWSER
+# ─────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────
-#  MENÚ PRINCIPAL
-# ─────────────────────────────────────────────
+def crear_browser(headless=False):
+    """Crea y retorna (playwright, browser, context, page)."""
+    from config import SESSION_PATH
+    p = sync_playwright().start()
+    browser = p.chromium.launch(
+        headless=headless,
+        args=["--start-maximized", "--disable-blink-features=AutomationControlled"]
+    )
+    context = browser.new_context(
+        no_viewport=True,
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+    # Cargar sesión si existe
+    try:
+        with open(SESSION_PATH, "r") as f:
+            storage = json.load(f)
+        context.add_cookies(storage.get("cookies", []))
+    except FileNotFoundError:
+        pass
 
-def mostrar_menu():
+    page = context.new_page()
+    try:
+        from playwright_stealth import stealth_sync
+        stealth_sync(page)
+    except Exception:
+        pass
+    return p, browser, context, page
+
+
+# ─────────────────────────────────────────────────────────────────
+#  MENÚ DE SELECCIÓN DE PORTAL
+# ─────────────────────────────────────────────────────────────────
+
+def seleccionar_portal() -> str:
     console.print(Panel.fit(
-        "[bold yellow]🤖 DuocLaboral Bot[/bold yellow]\n"
-        "[dim]Automatizador de postulaciones[/dim]",
+        "[bold cyan]🌐 Selecciona el Portal de Empleo[/bold cyan]",
+        border_style="cyan"
+    ))
+    console.print("  [1] 🎓 DuocLaboral")
+    console.print("  [2] 💼 ChileTrabajos")
+    console.print("  [3] 🔗 LinkedIn  [dim](próximamente)[/dim]")
+    console.print()
+    opcion = input("  Portal [1-3]: ").strip()
+    portales = {"1": "duoclaboral", "2": "chiletrabajos", "3": "linkedin"}
+    return portales.get(opcion, "duoclaboral")
+
+
+def obtener_instancia_portal(nombre: str, page, context):
+    """Devuelve la instancia correcta según el portal elegido."""
+    if nombre == "chiletrabajos":
+        from portales.chiletrabajos import ChileTrabajosPortal
+        return ChileTrabajosPortal(page, context)
+    else:  # Default: duoclaboral
+        from portales.duoclaboral import DuocLaboralPortal
+        return DuocLaboralPortal(page, context)
+
+
+# ─────────────────────────────────────────────────────────────────
+#  MENÚ PRINCIPAL
+# ─────────────────────────────────────────────────────────────────
+
+def mostrar_menu(nombre_portal: str):
+    emoji_portal = "🎓" if nombre_portal == "duoclaboral" else "💼"
+    label_portal = "DuocLaboral" if nombre_portal == "duoclaboral" else "ChileTrabajos"
+    console.print(Panel.fit(
+        f"[bold yellow]🤖 Bot de Postulaciones[/bold yellow]  {emoji_portal} [cyan]{label_portal}[/cyan]\n"
+        "[dim]Automatizador inteligente de postulaciones[/dim]",
         border_style="yellow"
     ))
     console.print("\n  [1] 🚀 Iniciar búsqueda y postulación [bold](modo revisión)[/bold]")
     console.print("  [2] ⚡ Modo automático [bold red](sin confirmación)[/bold red]")
     console.print("  [3] 📊 Ver mis postulaciones")
     console.print("  [4] 🔍 Solo escanear ofertas (sin postular)")
-    console.print("  [5] ❌ Salir")
+    console.print("  [5] 🔄 Cambiar portal")
+    console.print("  [6] ❌ Salir")
     console.print()
-    return input("  Elige una opción [1-5]: ").strip()
+    return input("  Elige una opción [1-6]: ").strip()
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 #  FLUJO PRINCIPAL DE POSTULACIÓN
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 
-def run_bot(modo_revision: bool = True):
+def _pausa(min_s=2.5, max_s=5.5):
+    time.sleep(random.uniform(min_s, max_s))
+
+
+def run_bot(nombre_portal: str, modo_revision: bool = True):
     console.rule("[yellow]Iniciando bot[/yellow]")
 
-    # Validar config
     try:
         validar_config()
     except EnvironmentError as e:
@@ -51,148 +121,97 @@ def run_bot(modo_revision: bool = True):
         console.print("\n[dim]Copia .env.example como .env y completa tus credenciales.[/dim]")
         return
 
-    # Inicializar BD
     inicializar_db()
 
     max_postulaciones = FILTROS.get("max_postulaciones_por_sesion", 10)
     enviadas = 0
     errores = 0
 
-    # Crear browser
     console.print("\n[cyan]🌐 Abriendo navegador...[/cyan]")
     p, browser, context, page = crear_browser(headless=False)
 
     try:
+        # Instanciar el portal dinámicamente
+        portal = obtener_instancia_portal(nombre_portal, page, context)
+        console.print(f"[bold cyan]Portal activo: {portal.nombre}[/bold cyan]")
+
         # Login
         console.print("[cyan]🔑 Iniciando sesión...[/cyan]")
-        if not login(page, context):
+        if not portal.login():
             console.print("[red]❌ No se pudo iniciar sesión. Verifica tus credenciales.[/red]")
             return
 
-        # ── NUEVO: Aplicar Filtros de Carrera si están configurados ──
-        carrera = FILTROS.get("carrera")
-        if carrera:
-            console.print(f"\n[bold magenta]⚙️ Aplicando filtros avanzados para: {carrera}[/bold magenta]")
-            aplicar_filtros_avanzados(page, carrera)
+        # Aplicar filtros de búsqueda
+        carrera = FILTROS.get("carrera", "Ingeniería en informática")
+        console.print(f"\n[bold magenta]⚙️ Aplicando filtros de búsqueda: {carrera} | Santiago[/bold magenta]")
+        portal.aplicar_filtros_avanzados(carrera)
 
-        # ── NUEVO: Procesamiento uno a uno por página ──
+        # Recorrer páginas de resultados
         paginas_totales = 5
         for num_pagina in range(1, paginas_totales + 1):
             if enviadas >= max_postulaciones:
                 break
-                
+
             console.print(f"\n[bold cyan]📄 Explorando página {num_pagina}...[/bold cyan]")
-            
-            # Si no es la primera página, usar el botón visual de "Siguiente" para no perder los filtros de sesión
-            if num_pagina > 1:
-                console.print("  [dim]Buscando botón Siguiente en el paginador...[/dim]")
-                btn_siguiente = page.query_selector('.pagination a[rel="next"], .pagination li:last-child a, a:has-text("Siguiente"), a:has-text("Next")')
-                if btn_siguiente:
-                    btn_siguiente.scroll_into_view_if_needed()
-                    btn_siguiente.click()
-                    console.print(f"  [dim]Navegando a página {num_pagina} (Clic Siguiente)[/dim]")
-                    _pausa(3, 5) # Esperar a que recargue la página la tabla
-                else:
-                    console.print("  [yellow]⚠️ No se encontró botón para avanzar a la página siguiente. Fin de resultados.[/yellow]")
-                    break
-            else:
-                console.print("  [dim]Manteniendo filtros UI de la primera página...[/dim]")
-            
-            # Esperar a que carguen las tarjetas
-            try:
-                page.wait_for_selector("a[href*='/jobs/'], .job-offer, .card-job", timeout=10000)
-            except:
-                console.print(f"  [yellow]⚠️ No se detectaron más ofertas en esta página.[/yellow]")
+            tarjetas_datos = portal.obtener_ofertas(paginas=paginas_totales, num_pagina_actual=num_pagina)
+
+            if not tarjetas_datos:
+                console.print("  [yellow]⚠️ No hay más ofertas. Fin de la búsqueda.[/yellow]")
                 break
 
-            # Encontrar todas las tarjetas de esta página
-            # Usamos selectores que apunten a los contenedores o links principales
-            tarjetas = page.query_selector_all("a[href*='/jobs/'], .job-offer, .card-job, article")
-            console.print(f"  [dim]Encontradas {len(tarjetas)} tarjetas.[/dim]")
+            console.print(f"  [dim]Encontradas {len(tarjetas_datos)} ofertas en esta página.[/dim]")
 
-            for idx, card in enumerate(tarjetas, 1):
+            for idx, oferta_basica in enumerate(tarjetas_datos, 1):
                 if enviadas >= max_postulaciones:
                     break
 
+                oferta_id = oferta_basica.get("id", "")
+                titulo_basico = oferta_basica.get("titulo", "")[:60]
+                url_oferta = oferta_basica.get("url", "")
+
+                # 1. Filtro de duplicados
+                if ya_postule(oferta_id):
+                    continue
+
+                # 2. Abrir en pestaña nueva
+                console.print(Panel(
+                    f"[bold yellow]OFERTA #{enviadas+1}[/bold yellow] | [bold white]{titulo_basico}[/bold white]\n"
+                    f"[dim]ID: {oferta_id}[/dim]",
+                    title="[cyan]Procesando[/cyan]",
+                    border_style="grey50"
+                ))
+
+                console.print(f"  [dim]Abriendo en nueva pestaña: {url_oferta}...[/dim]")
+                tab_postulacion = context.new_page()
                 try:
-                    # Extraer ID y Título básico de la tarjeta
-                    href = card.get_attribute("href") or ""
-                    
-                    # ── NUEVO: IGNORAR REDES SOCIALES ──
-                    if not href or href.startswith("http"):
-                        # Prioridad 1: Buscar directamente el botón Postular que tiene el link al trabajo
-                        link = card.query_selector("a.btn.btn-primary.job-card-apply-btn, a[href^='/jobs/']")
-                        href = link.get_attribute("href") if link else ""
-                    
-                    # Verificación extra por las dudas
-                    if not href or href.startswith("http"):
-                        continue
-                        
-                    if not href.startswith("/jobs/"):
-                        continue
-                    
-                    # Es vital tener la URL lista, extraída de scraper.py logic
-                    url_oferta = f"https://duoclaboral.cl{href}" if href.startswith("/") else href
-                    
-                    oferta_id = href.rstrip("/").split("/")[-1]
-                    titulo_basico = card.inner_text().split("\n")[0][:60]
+                    from playwright_stealth import stealth_sync
+                    stealth_sync(tab_postulacion)
+                except Exception:
+                    pass
 
-                    texto_tarjeta = card.inner_text().lower()
-                    
-                    # 1. Verificar si ya postulé (IMPORTANTE: NO BUSCAR INFINITAMENTE)
-                    if ya_postule(oferta_id):
-                        # console.print(f"  [dim]⏭  ({idx}) Ya postulada en DB: {titulo_basico}[/dim]")
-                        continue
-                        
-                    # 1.5 Detección Visual de Duplicado (por si se postuló a mano o en otra PC)
-                    if "postulad" in texto_tarjeta or "ya postulas" in texto_tarjeta:
-                        console.print(f"  [dim]⏭  ({idx}) Detectado como YA POSTULADO visualmente: {titulo_basico}[/dim]")
-                        # Registrar para que no vuelva a entrar en futuros ciclos
-                        registrar_postulacion(oferta_id, titulo_basico, "N/A", url_oferta, "duplicado", "Postulado previamente manual")
-                        continue
+                # Instanciar portal en la nueva pestaña
+                portal_tab = obtener_instancia_portal(nombre_portal, tab_postulacion, context)
 
-                    # 2. Entrar a la oferta (Haciendo click en 'Postular' de la tarjeta)
-                    console.print(Panel(
-                        f"[bold yellow]OFERTA #{enviadas+1}[/bold yellow] | [bold white]{titulo_basico}[/bold white]\n"
-                        f"[dim]ID: {oferta_id}[/dim]",
-                        title="[cyan]Procesando Individualmente[/cyan]",
-                        border_style="grey50"
-                    ))
+                tab_postulacion.goto(url_oferta, timeout=60000)
+                tab_postulacion.wait_for_load_state("networkidle")
+                _pausa(2, 4)
 
-                    # Selector exacto basado en el HTML del usuario para el enlace de postulación inicial
-                    btn_postular_sel = "a.btn.btn-primary.job-card-apply-btn"
-                    btn_postular = card.query_selector(btn_postular_sel)
-                    if btn_postular:
-                        console.print(f"  [cyan]🖱️  Detectado botón 'Postular' de la tarjeta (ID: {oferta_id})...[/cyan]")
-                    
-                    # ── NUEVO FLUJO: Abrir en pestaña nueva para no perder filtros ──
-                    nueva_url = url_oferta
-                    console.print(f"  [dim]Abriendo en nueva pestaña: {nueva_url}...[/dim]")
-                    
-                    # Crear nueva pestaña
-                    tab_postulacion = context.new_page()
-                    # Si usas stealth, aplícalo aquí también
-                    try:
-                        from playwright_stealth import stealth_sync
-                        stealth_sync(tab_postulacion)
-                    except: pass
-                    
-                    tab_postulacion.goto(nueva_url, timeout=60000)
-                    tab_postulacion.wait_for_load_state("networkidle")
-                    _pausa(2, 4)
+                try:
+                    # 3. Obtener detalle de la oferta
+                    detalle = portal_tab.obtener_detalle_oferta(url_oferta)
 
-                    # 3. Obtener detalle completo desde la pestaña nueva
-                    detalle = obtener_detalle_oferta(tab_postulacion, tab_postulacion.url) 
-                    
-                    # 4. Evaluación de Relevancia
+                    # 4. Evaluación de Relevancia con IA
                     relevante, razon = evaluar_oferta_relevancia(
                         detalle.get("titulo", titulo_basico), detalle.get("descripcion", "")
                     )
-                    
+
                     if relevante:
-                        console.print(f"  [bold green]🚀 Iniciando postulación interactiva...[/bold green]")
-                        estado = postular_oferta(tab_postulacion, {"id": oferta_id, "titulo": detalle["titulo"], "url": tab_postulacion.url}, detalle, modo_revision=modo_revision)
-                        
+                        console.print(f"  [bold green]🚀 Iniciando postulación...[/bold green]")
+                        estado = portal_tab.postular_oferta(
+                            {"id": oferta_id, "titulo": detalle["titulo"], "url": url_oferta, "empresa": detalle.get("empresa", "")},
+                            detalle,
+                            modo_revision=modo_revision
+                        )
                         if estado == "enviada":
                             enviadas += 1
                         elif estado in ("error", "error_boton"):
@@ -200,16 +219,15 @@ def run_bot(modo_revision: bool = True):
                     else:
                         console.print(f"  [dim]⏭  No relevante: {razon}[/dim]")
 
-                    # 5. Volver al listado: Cerramos la pestaña, la página original sigue intacta
-                    console.print("  [dim]Cerrando pestaña y volviendo al listado intacto...[/dim]")
-                    tab_postulacion.close()
-                    _pausa(1, 2)
-
                 except Exception as e:
-                    console.print(f"  [red]⚠️ Error procesando tarjeta {idx}: {e}[/red]")
+                    console.print(f"  [red]⚠️ Error procesando oferta {idx}: {e}[/red]")
+
+                finally:
                     try:
                         tab_postulacion.close()
-                    except: pass
+                    except Exception:
+                        pass
+                    _pausa(1, 2)
 
     except KeyboardInterrupt:
         console.print("\n[bold red]🛑 Bot detenido manualmente por el usuario.[/bold red]")
@@ -224,11 +242,11 @@ def run_bot(modo_revision: bool = True):
     console.print(f"  📊 Total histórico        : {total_postulaciones()}")
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 #  SOLO ESCANEAR (sin postular)
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 
-def solo_escanear():
+def solo_escanear(nombre_portal: str):
     console.rule("[cyan]Modo escaneo[/cyan]")
     try:
         validar_config()
@@ -240,12 +258,15 @@ def solo_escanear():
     p, browser, context, page = crear_browser(headless=False)
 
     try:
-        if not login(page, context):
+        portal = obtener_instancia_portal(nombre_portal, page, context)
+        if not portal.login():
             return
 
-        ofertas = obtener_ofertas(page, paginas=3)
+        carrera = FILTROS.get("carrera", "Ingeniería en informática")
+        portal.aplicar_filtros_avanzados(carrera)
+        ofertas = portal.obtener_ofertas(paginas=3, num_pagina_actual=1)
 
-        tabla = Table(title="Ofertas encontradas", box=box.ROUNDED)
+        tabla = Table(title=f"Ofertas encontradas — {portal.nombre}", box=box.ROUNDED)
         tabla.add_column("#", style="dim", width=4)
         tabla.add_column("Título", style="yellow")
         tabla.add_column("URL", style="dim")
@@ -261,9 +282,9 @@ def solo_escanear():
         p.stop()
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 #  VER POSTULACIONES
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 
 def ver_postulaciones():
     inicializar_db()
@@ -299,26 +320,30 @@ def ver_postulaciones():
     console.print(tabla)
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 #  ENTRY POINT
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    nombre_portal = seleccionar_portal()
+
     while True:
-        opcion = mostrar_menu()
+        opcion = mostrar_menu(nombre_portal)
 
         if opcion == "1":
-            run_bot(modo_revision=True)
+            run_bot(nombre_portal, modo_revision=True)
         elif opcion == "2":
             console.print("\n[red bold]⚠️  MODO AUTOMÁTICO: postulará SIN pedir confirmación[/red bold]")
             confirmar = input("  ¿Estás seguro? [s/N]: ").strip().lower()
             if confirmar == "s":
-                run_bot(modo_revision=False)
+                run_bot(nombre_portal, modo_revision=False)
         elif opcion == "3":
             ver_postulaciones()
         elif opcion == "4":
-            solo_escanear()
+            solo_escanear(nombre_portal)
         elif opcion == "5":
+            nombre_portal = seleccionar_portal()
+        elif opcion == "6":
             console.print("[dim]Chao 👋[/dim]")
             sys.exit(0)
         else:
