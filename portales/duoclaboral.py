@@ -111,9 +111,7 @@ class DuocLaboralPortal(PortalBase):
         if num_pagina_actual > 1:
             # Paginación: buscar enlace "Siguiente" o úrrow en el paginador
             btn_siguiente = self.page.query_selector(
-                '.pagination a[rel="next"], '
-                'li.next a, '
-                'a:has-text(">"): '
+                '.pagination a[rel="next"], li.next a'
             )
             if not btn_siguiente:
                 # Intentar hacer clic en el número de página siguiente
@@ -325,27 +323,42 @@ class DuocLaboralPortal(PortalBase):
 
         if modo_revision:
             console.print("")
+            resumen = resumir_oferta(descripcion)
             console.print(Panel(
-                f"[italic white]{resumir_oferta(descripcion)}[/italic white]",
-                title="[cyan]ℹ  Sobre esta oferta[/cyan]", border_style="cyan", padding=(0, 2)
+                f"[italic dim]{resumen}[/italic dim]",
+                title="[bold cyan]📋 Resumen de la oferta[/bold cyan]",
+                border_style="cyan", padding=(0, 1)
             ))
+
+            # Mostrar preguntas y respuestas de forma clara
+            if respuestas_generadas:
+                console.print(f"\n[bold white]{'─'*56}[/bold white]")
+                console.print(f"[bold white]  📝 RESPUESTAS GENERADAS ({len(respuestas_generadas)} pregunta/s)[/bold white]")
+                console.print(f"[bold white]{'─'*56}[/bold white]")
+                for i, r in enumerate(respuestas_generadas, 1):
+                    console.print(f"\n  [bold yellow]❓ P{i}:[/bold yellow] [yellow]{r['pregunta'][:100]}[/yellow]")
+                    console.print(Panel(
+                        f"[white]{r['respuesta']}[/white]",
+                        border_style="green", padding=(0, 1)
+                    ))
             console.print("")
 
-            for i, r in enumerate(respuestas_generadas, 1):
-                console.print(f"[dim]P{i}[/dim] {r['pregunta'][:90]}")
-                console.print(f"    [green]→[/green] {r['respuesta']}\\n")
-
+            # Edición opcional de respuestas
             for i, r in enumerate(respuestas_generadas):
-                opcion = input(f"  Editar P{i+1}? [e] / [ENTER] ok: ").strip().lower()
+                opcion = input(f"  ✏️  Editar respuesta P{i+1}? [e = editar / ENTER = ok]: ").strip().lower()
                 if opcion == 'e':
-                    nueva = input("  Nueva respuesta: ").strip()
-                    if nueva: r['respuesta'] = nueva
+                    nueva = input(f"  Nueva respuesta para P{i+1}: ").strip()
+                    if nueva:
+                        r['respuesta'] = nueva
+                        console.print(f"  [green]✅ Respuesta P{i+1} actualizada[/green]")
 
-            renta_ingresada = input("  Renta líquida [ENTER = $100.000 / escribe otro valor]: ").strip()
+            console.print("")
+            renta_ingresada = input("  💰 Renta líquida esperada [ENTER = $100.000]: ").strip()
             renta_valor_final = renta_ingresada.replace(".", "").replace("$", "").strip() or "100000"
-            console.print(f"[dim]  Renta a enviar: ${int(renta_valor_final):,}[/dim]".replace(",", "."))
+            console.print(f"  [dim]Renta a enviar: [bold]${int(renta_valor_final):,}[/bold][/dim]".replace(",", "."))
 
-            confirmacion = input("  ¿Postular? [s] Sí / [n] No: ").strip().lower()
+            console.print("")
+            confirmacion = input("  🚀 ¿Confirmar postulación? [s = Sí / n = No]: ").strip().lower()
             if confirmacion != "s":
                 registrar_postulacion(oferta_id, titulo, empresa, url, "saltada", json.dumps(respuestas_generadas, ensure_ascii=False))
                 return "saltada"
