@@ -17,6 +17,7 @@ from rich import box
 from config import validar_config, FILTROS
 from database import inicializar_db, listar_postulaciones, total_postulaciones, ya_postule, registrar_postulacion
 from ai_responder import evaluar_oferta_relevancia
+import limit_tracker
 
 console = Console()
 
@@ -74,10 +75,13 @@ def seleccionar_portal() -> str:
 def obtener_instancia_portal(nombre: str, page, context):
     """Devuelve la instancia correcta según el portal elegido."""
     if nombre == "chiletrabajos":
-        from portales.chiletrabajos import ChileTrabajosPortal
+        from portales.chiletrabajos.portal import ChileTrabajosPortal
         return ChileTrabajosPortal(page, context)
+    elif nombre == "linkedin":
+        from portales.linkedin.portal import LinkedinPortal
+        return LinkedinPortal(page, context)
     else:  # Default: duoclaboral
-        from portales.duoclaboral import DuocLaboralPortal
+        from portales.duoclaboral.portal import DuocLaboralPortal
         return DuocLaboralPortal(page, context)
 
 
@@ -86,8 +90,8 @@ def obtener_instancia_portal(nombre: str, page, context):
 # ─────────────────────────────────────────────────────────────────
 
 def mostrar_menu(nombre_portal: str):
-    emoji_portal = "🎓" if nombre_portal == "duoclaboral" else "💼"
-    label_portal = "DuocLaboral" if nombre_portal == "duoclaboral" else "ChileTrabajos"
+    emoji_portal = "🔗" if nombre_portal == "linkedin" else ("🎓" if nombre_portal == "duoclaboral" else "💼")
+    label_portal = "LinkedIn" if nombre_portal == "linkedin" else ("DuocLaboral" if nombre_portal == "duoclaboral" else "ChileTrabajos")
     console.print(Panel.fit(
         f"[bold yellow]🤖 Bot de Postulaciones[/bold yellow]  {emoji_portal} [cyan]{label_portal}[/cyan]\n"
         "[dim]Automatizador inteligente de postulaciones[/dim]",
@@ -96,11 +100,12 @@ def mostrar_menu(nombre_portal: str):
     console.print("\n  [1] 🚀 Iniciar búsqueda y postulación [bold](modo revisión)[/bold]")
     console.print("  [2] ⚡ Modo automático [bold red](sin confirmación)[/bold red]")
     console.print("  [3] 📊 Ver mis postulaciones")
-    console.print("  [4] 🔍 Solo escanear ofertas (sin postular)")
-    console.print("  [5] 🔄 Cambiar portal")
-    console.print("  [6] ❌ Salir")
+    console.print("  [4] 🤖 Probar Conexión Groq AI", style="bold yellow")
+    console.print("  [5] 🔍 Solo escanear ofertas (sin postular)")
+    console.print("  [6] 🔄 Cambiar portal")
+    console.print("  [9] ❌ Salir", style="bold red")
     console.print()
-    return input("  Elige una opción [1-6]: ").strip()
+    return input("  Elige una opción [1-6, 9]: ").strip()
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -171,6 +176,7 @@ def run_bot(nombre_portal: str, modo_revision: bool = True):
 
                 # 1. Filtro de duplicados
                 if ya_postule(oferta_id):
+                    console.print(f"  [dim]⏭  Omitiendo {oferta_id} (ya postulado en DB).[/dim]")
                     continue
 
                 # 2. Abrir en pestaña nueva
@@ -203,6 +209,14 @@ def run_bot(nombre_portal: str, modo_revision: bool = True):
                     # 3. Obtener detalle de la oferta
                     detalle = portal_tab.obtener_detalle_oferta(url_oferta)
 
+                    # Para LinkedIn: si la oferta no es Easy Apply, la saltamos SIN evaluar con IA
+                    # (para no gastar tokens de Groq en ofertas que no podemos postular)
+                    if nombre_portal == "linkedin" and not detalle.get("es_sencilla"):
+                        console.print("  [yellow]↪ Oferta externa (sin Solicitud sencilla). Saltando...[/yellow]")
+                        tab_postulacion.close()
+                        _pausa(0.5, 1)
+                        continue
+
                     # 4. Evaluación de Relevancia con IA
                     relevante, razon = evaluar_oferta_relevancia(
                         detalle.get("titulo", titulo_basico), detalle.get("descripcion", "")
@@ -211,7 +225,7 @@ def run_bot(nombre_portal: str, modo_revision: bool = True):
                     if relevante:
                         console.print(f"  [bold green]🚀 Iniciando postulación...[/bold green]")
                         estado = portal_tab.postular_oferta(
-                            {"id": oferta_id, "titulo": detalle["titulo"], "url": url_oferta, "empresa": detalle.get("empresa", "")},
+                            {"id": oferta_id, "titulo": detalle.get("titulo", titulo_basico), "url": url_oferta, "empresa": detalle.get("empresa", "")},
                             detalle,
                             modo_revision=modo_revision
                         )
@@ -219,8 +233,13 @@ def run_bot(nombre_portal: str, modo_revision: bool = True):
                             enviadas += 1
                         elif estado in ("error", "error_boton"):
                             errores += 1
+                            console.print("  [red]Falló esta oferta, pasando a la siguiente...[/red]")
+                        elif estado == "external":
+                            console.print("  [yellow]ℹ️  Omitida: es una postulación externa (no Solicitud Sencilla).[/yellow]")
+                        elif estado == "revision":
+                            console.print("  [blue]👀 Detenido para revisión del usuario.[/blue]")
                     else:
-                        console.print(f"  [dim]⏭  No relevante: {razon}[/dim]")
+                        console.print(f"  [bold red]⏭  No relevante:[/bold red] {razon}")
 
                 except Exception as e:
                     console.print(f"  [red]⚠️ Error procesando oferta {idx}: {e}[/red]")
@@ -343,10 +362,15 @@ if __name__ == "__main__":
         elif opcion == "3":
             ver_postulaciones()
         elif opcion == "4":
-            solo_escanear(nombre_portal)
+            import ai_responder
+            console.print("[yellow]Probando conexión a Groq...[/yellow]")
+            res = ai_responder.probar_conexion()
+            console.print(f"[bold green]Resultado: {res}[/bold green]")
         elif opcion == "5":
-            nombre_portal = seleccionar_portal()
+            solo_escanear(nombre_portal)
         elif opcion == "6":
+            nombre_portal = seleccionar_portal()
+        elif opcion == "9":
             console.print("[dim]Chao 👋[/dim]")
             sys.exit(0)
         else:

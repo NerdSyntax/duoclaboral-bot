@@ -7,14 +7,22 @@ import time
 from groq import Groq
 from config import GROQ_API_KEY, cargar_perfil
 
+import httpx
+from limit_tracker import guardar_limites
+
 _client = None
 _perfil = None
 
 
+def _on_response(response: httpx.Response):
+    """Callback invocado por httpx para extraer del rate limit."""
+    guardar_limites(response.headers)
+
 def _get_client():
     global _client
     if _client is None:
-        _client = Groq(api_key=GROQ_API_KEY)
+        http_client = httpx.Client(event_hooks={'response': [_on_response]})
+        _client = Groq(api_key=GROQ_API_KEY, http_client=http_client)
     return _client
 
 
@@ -45,6 +53,7 @@ def _construir_contexto_perfil(perfil: dict) -> str:
     return f"""
 PERFIL DEL CANDIDATO:
 - Nombre: {perfil.get('nombre_completo', 'José Oporto')}
+- RUT: {perfil.get('rut', '21687322-K')}
 - Email personal: jose.oporto.va@gmail.com
 - Teléfono: +56944399872
 - Ubicación/Comuna: {perfil.get('ubicacion', 'Santiago')}
@@ -95,41 +104,134 @@ INSTRUCCIONES CLAVES Y ESTRICTAS:
    - "Si bien no he utilizado [tecnología] en contextos laborales, manejo conceptos relacionados y estoy abierto a capacitarme."
    - "Mi experiencia con [tecnología] es básica, pero me comprometo a desarrollar ese conocimiento según las necesidades del equipo."
    Elige la variación que suene más natural para esa pregunta específica.
-8. Máximo 2 oraciones. Sin introducciones, saludos, despedidas ni comillas. Solo la respuesta directa.
-9. Cero emojis.
+8. REGLA ESTRICTA 8 (RUT): Si preguntan por "RUT", "Rut", "rut", "número de identificación", "Cédula" responde EXACTAMENTE: "21687322-K"
+9. Máximo 2 oraciones. Sin introducciones, saludos, despedidas ni comillas. Solo la respuesta directa.
+10. Cero emojis.
 
 PREGUNTA DE LA EMPRESA:
 {pregunta}
 
 TU RESPUESTA COMO JOSÉ OPORTO:"""
 
-    for intento in range(3):
-        try:
-            # Pausa mínima (Groq es mucho más noble con los límites básicos)
-            time.sleep(1.5)
-            
-            client = _get_client()
-            chat_completion = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama-3.3-70b-versatile",
-                temperature=0.85,
-                max_tokens=256
-            )
-            return chat_completion.choices[0].message.content.strip()
-        except Exception as e:
-            err_msg = str(e)
-            if "429" in err_msg and intento < 2:
-                print("    ⏳ Límite de solicitudes rate-limit (429). Reintentando en 6s...")
-                time.sleep(6)
-                continue
-            if "403" in err_msg:
-                print("    ❌ Error 403 - Acceso prohibido (revisa tu API KEY de Groq). Usando respuesta de respaldo.")
-                return "Cuento con las habilidades y disposición para integrarme rápidamente al equipo y aportar valor desde el primer día."
-            
-            print(f"    ⚠️ Error en IA: {e}")
-            return f"[Error al generar respuesta: {e}]"
-    
+    modelos_fallback = [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it"
+    ]
+
+    for modelo in modelos_fallback:
+        for intento in range(2):
+            try:
+                # Pausa mínima (Groq es mucho más noble con los límites básicos)
+                time.sleep(1.5)
+                
+                client = _get_client()
+                chat_completion = client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=modelo,
+                    temperature=0.85,
+                    max_tokens=256
+                )
+                return chat_completion.choices[0].message.content.strip()
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg:
+                    print(f"    ⏳ Límite de solicitudes (429) con modelo {modelo}. Intentando con otro si es posible...")
+                    time.sleep(2)
+                    break # Salta al siguiente modelo
+                if "403" in err_msg:
+                    print("    ❌ Error 403 - Acceso prohibido (revisa tu API KEY de Groq). Usando respuesta de respaldo.")
+                    return "Cuento con las habilidades y disposición para integrarme rápidamente al equipo y aportar valor desde el primer día."
+                
+                print(f"    ⚠️ Error en IA: {e}")
+                time.sleep(2)
+                
     return "Disponible para ampliar cualquier detalle sobre mi perfil en una entrevista personal."
+
+
+def elegir_opcion_select(pregunta: str, opciones: list, descripcion_oferta: str = "") -> str:
+    """
+    Dada una pregunta de formulario y una lista de opciones disponibles en un <select>,
+    usa la IA para elegir la opción más adecuada según el perfil del candidato.
+
+    Args:
+        pregunta: Texto de la pregunta/label del campo
+        opciones: Lista de strings con las opciones disponibles (valor visible)
+        descripcion_oferta: Descripción de la oferta para contexto
+
+    Returns:
+        El texto exacto de la opción elegida (para usar con select_option(label=...))
+    """
+    if not opciones:
+        return ""
+
+    # Si solo hay 1 opción real (además del placeholder), retornamos esa directamente
+    opciones_reales = [o for o in opciones if o.lower() not in (
+        "", "selecciona una opción", "select an option", "seleccione", "-- selecciona --"
+    )]
+    if len(opciones_reales) == 1:
+        return opciones_reales[0]
+
+    perfil = _get_perfil()
+    contexto = _construir_contexto_perfil(perfil)
+
+    opciones_str = "\n".join(f"  - \"{o}\"" for o in opciones_reales)
+
+    prompt = f"""Eres José Oporto, estudiante de Ingeniería Informática postulando a un trabajo.
+Dado tu perfil y la siguiente pregunta de un formulario de postulación,
+elige la opción MÁS ADECUADA de la lista proporcionada.
+
+{contexto}
+
+OFERTA DE TRABAJO:
+{descripcion_oferta[:500] if descripcion_oferta else "(General)"}
+
+PREGUNTA DEL FORMULARIO: {pregunta}
+
+OPCIONES DISPONIBLES:
+{opciones_str}
+
+INSTRUCCIONES:
+- Si la pregunta es Sí/No (o Yes/No): elige Sí/Yes si tienes la habilidad, No si claramente no la tienes.
+- Para experiencia con tecnologías desconocidas (SAP, ERP específico, herramientas muy especializadas): elige No.
+- Para tecnologías que sí manejas (Python, Git, HTML, soporte, Windows, Office): elige Sí/Yes.
+- Responde ÚNICAMENTE con el JSON: {{"opcion": "TEXTO EXACTO DE LA OPCIÓN ELEGIDA"}}
+- El texto debe ser EXACTAMENTE uno de los valores de la lista de opciones.
+
+JSON:"""
+
+    modelos = ["llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"]
+    for modelo in modelos:
+        try:
+            time.sleep(1.0)
+            client = _get_client()
+            chat = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model=modelo,
+                temperature=0.0,
+                max_tokens=60,
+                response_format={"type": "json_object"}
+            )
+            text = chat.choices[0].message.content.strip()
+            data = json.loads(text)
+            elegida = data.get("opcion", "").strip()
+            # Validar que la opción elegida existe en la lista
+            for op in opciones_reales:
+                if op.lower() == elegida.lower():
+                    return op
+            # Fallback: primer opción real si la IA devuelve algo inválido
+            return opciones_reales[0]
+        except Exception as e:
+            err = str(e)
+            if "429" in err:
+                time.sleep(1.5)
+                continue
+            continue
+
+    # Fallback final: primera opción real
+    return opciones_reales[0]
+
 
 
 def resumir_oferta(descripcion: str) -> str:
@@ -163,22 +265,34 @@ REGLAS ESTRICTAS:
 
 Resumen:"""
 
-    for intento in range(2):
-        try:
-            time.sleep(1.0)
-            client = _get_client()
-            chat = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama-3.1-8b-instant",
-                temperature=0.3,
-                max_tokens=600
-            )
-            return chat.choices[0].message.content.strip()
-        except Exception as e:
-            if intento < 1:
-                time.sleep(3)
-                continue
-            return f"(No se pudo generar el resumen: {e})"
+    modelos_fallback = [
+        "llama-3.1-8b-instant",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it",
+        "llama-3.3-70b-versatile"
+    ]
+
+    for modelo in modelos_fallback:
+        for intento in range(2):
+            try:
+                time.sleep(1.0)
+                client = _get_client()
+                chat = client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=modelo,
+                    temperature=0.3,
+                    max_tokens=600
+                )
+                return chat.choices[0].message.content.strip()
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg:
+                    time.sleep(1.5)
+                    break
+                if intento < 1:
+                    time.sleep(3)
+                    continue
+                return f"(No se pudo generar el resumen: {e})"
     return "(Resumen no disponible)"
 
 
@@ -205,24 +319,35 @@ Oferta Descripción: {descripcion_corta}
 Responde UNICAMENTE con este formato JSON:
 {{"relevante": true, "razon": "breve explicacion"}} o {{"relevante": false, "razon": "breve explicacion"}}
 """
-    for intento in range(3):
-        try:
-            time.sleep(1.0)
-            client = _get_client()
-            chat_completion = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama-3.1-8b-instant",
-                temperature=0.0,
-                response_format={"type": "json_object"}
-            )
-            text = chat_completion.choices[0].message.content.strip()
-            data = json.loads(text)
-            return data.get("relevante", True), data.get("razon", "Evaluado correctamente")
-        except Exception:
-            if intento < 2:
-                time.sleep(2)
-                continue
-            return True, "Asumida como relevante por error técnico"
+    modelos_fallback = [
+        "llama-3.1-8b-instant",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it" 
+    ]
+
+    for modelo in modelos_fallback:
+        for intento in range(2):
+            try:
+                time.sleep(1.0)
+                client = _get_client()
+                chat_completion = client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=modelo,
+                    temperature=0.0,
+                    response_format={"type": "json_object"}
+                )
+                text = chat_completion.choices[0].message.content.strip()
+                data = json.loads(text)
+                return data.get("relevante", True), data.get("razon", "Evaluado correctamente")
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg:
+                    time.sleep(1)
+                    break
+                if intento < 1:
+                    time.sleep(2)
+                    continue
+                return True, "Asumida como relevante por error técnico"
     
     return True, "Asumida como relevante por defecto"
 

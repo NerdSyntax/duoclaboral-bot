@@ -12,6 +12,8 @@ DUOC_EMAIL    = os.getenv("DUOC_EMAIL", "")
 DUOC_PASSWORD = os.getenv("DUOC_PASSWORD", "")
 CHILETRABAJOS_EMAIL = os.getenv("CHILETRABAJOS_EMAIL", "")
 CHILETRABAJOS_PASSWORD = os.getenv("CHILETRABAJOS_PASSWORD", "")
+LINKEDIN_EMAIL = os.getenv("LINKEDIN_EMAIL", "")
+LINKEDIN_PASSWORD = os.getenv("LINKEDIN_PASSWORD", "")
 GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
 
 # ── URLs ──────────────────────────────────────────────────
@@ -33,6 +35,8 @@ BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 PERFIL_PATH = os.path.join(BASE_DIR, "perfil.json")
 DB_PATH     = os.path.join(BASE_DIR, "postulaciones.db")
 SESSION_PATH = os.path.join(BASE_DIR, "session_state.json")
+CV_PATH      = os.getenv("CV_PATH", os.path.join(BASE_DIR, "portales", "chiletrabajos", "cv_joseluis.pdf"))
+
 
 
 def cargar_perfil() -> dict:
