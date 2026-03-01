@@ -107,7 +107,7 @@ def mostrar_menu(nombre_portal: str):
 #  FLUJO PRINCIPAL DE POSTULACIÓN
 # ─────────────────────────────────────────────────────────────────
 
-def _pausa(min_s=2.5, max_s=5.5):
+def _pausa(min_s=1.0, max_s=2.5):
     time.sleep(random.uniform(min_s, max_s))
 
 
@@ -193,8 +193,11 @@ def run_bot(nombre_portal: str, modo_revision: bool = True):
                 portal_tab = obtener_instancia_portal(nombre_portal, tab_postulacion, context)
 
                 tab_postulacion.goto(url_oferta, timeout=60000)
-                tab_postulacion.wait_for_load_state("networkidle")
-                _pausa(2, 4)
+                try:
+                    tab_postulacion.wait_for_load_state("load", timeout=15000)
+                except Exception:
+                    pass
+                _pausa(1, 2)
 
                 try:
                     # 3. Obtener detalle de la oferta
@@ -227,7 +230,7 @@ def run_bot(nombre_portal: str, modo_revision: bool = True):
                         tab_postulacion.close()
                     except Exception:
                         pass
-                    _pausa(1, 2)
+                    _pausa(0.5, 1)
 
     except KeyboardInterrupt:
         console.print("\n[bold red]🛑 Bot detenido manualmente por el usuario.[/bold red]")

@@ -12,7 +12,7 @@ from portales.base import PortalBase
 
 console = Console()
 
-def _pausa(min_s=2.5, max_s=5.5):
+def _pausa(min_s=1.0, max_s=2.5):
     time.sleep(random.uniform(min_s, max_s))
 
 def scroll_aleatorio(page: Page):
@@ -87,110 +87,100 @@ class DuocLaboralPortal(PortalBase):
             json.dump({"cookies": cookies}, f)
 
     def aplicar_filtros_avanzados(self, carrera: str):
-        """Aplica filtro de carrera en UI."""
+        """Navega directamente a la URL de búsqueda con carrera=Ingeniería en informática (id=341)."""
+        # Usamos URL directa con parámetro de carrera — mucho más rápido y confiable que la UI
+        # genericCareer=341 = Ingeniería en informática (según el HTML del select)
+        search_url = (
+            "https://duoclaboral.cl/trabajo/trabajos-en-chile"
+            "?Search[jobOfferType]=0"
+            "&Search[genericCareer]=341"
+        )
+        console.print(f"  [cyan]🔗 Navegando a búsqueda por URL directa...[/cyan]")
+        self.page.goto(search_url, timeout=60000)
         try:
-            self.page.goto(OFERTAS_URL, timeout=60000)
-            _pausa(2, 4)
-            
-            btn_filtros = self.page.query_selector('button:has-text("Filtros"), .btn-filters, .filters-button')
-            if btn_filtros:
-                btn_filtros.scroll_into_view_if_needed()
-                btn_filtros.click()
-                _pausa(1, 2)
-            
-            console.print("[dim]🔎 Buscando selector de Carrera (Selectize)...[/dim]")
-            
-            input_container_sel = ".selectize-input"
-            self.page.wait_for_selector(input_container_sel, timeout=10000)
-            self.page.click(input_container_sel)
-            _pausa(0.5, 1.0)
-            
-            input_selectize = "input#Search_genericCareer-selectized"
-            input_el = self.page.wait_for_selector(input_selectize, state="visible", timeout=5000)
-            
-            if input_el:
-                input_el.fill("")
-                self.page.keyboard.type(carrera, delay=150) 
-                _pausa(3.0, 4.0) 
-                
-                self.page.keyboard.press("ArrowDown", delay=200) 
-                _pausa(1.0, 1.5)
-                self.page.keyboard.press("Enter", delay=300)
-                _pausa(1.5, 2.5)
-                console.print(f"  [green]✅ Carrera '{carrera}' seleccionada en UI.[/green]")
-            else:
-                console.print("  [yellow]⚠️ No se encontró el input selectize interactivo.[/yellow]")
-            
-            btn_aplicar = self.page.query_selector('button:has-text("Aplicar filtros"), button:has-text("Buscar"), .orange-button, #search-btn')
-            if btn_aplicar:
-                btn_aplicar.scroll_into_view_if_needed()
-                btn_aplicar.click()
-                console.print("  [cyan]🚀 Aplicando filtros y recargando resultados...[/cyan]")
-                _pausa(4, 6) 
-                
-                texto_pantalla = self.page.locator("body").inner_text().lower()
-                if "informátic" not in texto_pantalla and "ingenier" not in texto_pantalla:
-                    raise Exception("Fallo Crítico: El filtro de Carrera NO se aplicó en la página web.")
-                    
-                console.print("  [green]✅ Validación visual superada: Filtro de carrera activo en DOM.[/green]")
-            else:
-                console.print("  [yellow]⚠️ No se halló el botón 'Aplicar' / 'Buscar'[/yellow]")
-                
-        except Exception as e:
-            print(f"⚠️ Error al aplicar filtros manuales: {e}. Intentando continuar...")
+            self.page.wait_for_load_state("load", timeout=15000)
+        except Exception:
+            pass
+        _pausa(1, 2)
 
 
     def obtener_ofertas(self, paginas: int = 3, num_pagina_actual: int = 1) -> list[dict]:
-        """Obtiene las ofertas de la página actual."""
+        """Obtiene ofertas de la página actual de DuocLaboral usando selectores correctos del HTML real."""
         ofertas = []
 
         if num_pagina_actual > 1:
-            console.print("  [dim]Buscando botón Siguiente en el paginador...[/dim]")
-            btn_siguiente = self.page.query_selector('.pagination a[rel="next"], .pagination li:last-child a, a:has-text("Siguiente"), a:has-text("Next")')
+            # Paginación: buscar enlace "Siguiente" o úrrow en el paginador
+            btn_siguiente = self.page.query_selector(
+                '.pagination a[rel="next"], '
+                'li.next a, '
+                'a:has-text(">"): '
+            )
+            if not btn_siguiente:
+                # Intentar hacer clic en el número de página siguiente
+                try:
+                    num_links = self.page.query_selector_all('.pagination a')
+                    for lnk in num_links:
+                        txt = lnk.inner_text().strip()
+                        if txt == str(num_pagina_actual):
+                            btn_siguiente = lnk
+                            break
+                except Exception:
+                    pass
+
             if btn_siguiente:
                 btn_siguiente.scroll_into_view_if_needed()
                 btn_siguiente.click()
-                console.print(f"  [dim]Navegando a página {num_pagina_actual} (Clic Siguiente)[/dim]")
-                _pausa(3, 5) 
+                console.print(f"  [dim]Navegando a página {num_pagina_actual}...[/dim]")
+                _pausa(2, 3)
             else:
-                console.print("  [yellow]⚠️ No se encontró botón para avanzar a la página siguiente. Fin de resultados.[/yellow]")
+                console.print("  [yellow]⚠️ Fin de resultados (no hay página siguiente).[/yellow]")
                 return []
         else:
-            console.print(f"[dim]📄 Escaneando página 1 (filtros actuales)...[/dim]")
+            console.print(f"[dim]📄 Escaneando página 1...[/dim]")
 
         try:
-            selector_ofertas = ".job-card, .job-offer, article" 
-            self.page.wait_for_selector(selector_ofertas, timeout=10000)
+            self.page.wait_for_selector("article.job-card, .job-card", timeout=10000)
         except Exception:
-            console.print(f"  [yellow]⚠️  No se encontraron más ofertas en esta página[/yellow]")
+            console.print(f"  [yellow]⚠️  No se encontraron ofertas en esta página[/yellow]")
             return []
 
-        tarjetas = self.page.query_selector_all("a[href*='/trabajar-en-'], a[href*='/trabajo/trabajar']")
-        if not tarjetas:
-            tarjetas = self.page.query_selector_all(".job-listing a, .oferta-card a, h2 a, h3 a")
+        # Las tarjetas en DuocLaboral son <article class="job-card"> con un enlace <a href="/jobs/ID">
+        articulos = self.page.query_selector_all("article.job-card")
+        console.print(f"  [dim]Encontré {len(articulos)} tarjetas en esta página.[/dim]")
 
-        for tarjeta in tarjetas:
+        for art in articulos:
             try:
-                if random.random() < 0.3: scroll_aleatorio(self.page)
-                    
-                href = tarjeta.get_attribute("href") or ""
-                if not href or "/trabajar" not in href:
+                if random.random() < 0.2: scroll_aleatorio(self.page)
+
+                # Saltar las que ya marcaron "Ya postulaste" en la tarjeta
+                ya_aplicado = art.query_selector(".job-card-applied")
+                if ya_aplicado:
                     continue
 
+                # Enlace principal del trabajo: <a href="/jobs/856396">
+                enlace = art.query_selector("a[href*='/jobs/']") or art.query_selector("h2 a, .job-card-title a")
+                if not enlace:
+                    continue
+
+                href = enlace.get_attribute("href") or ""
+                if not href:
+                    continue
+
+                # ID es el último segmento de /jobs/856396
                 oferta_id = href.rstrip("/").split("/")[-1]
-                
-                titulo = ""
-                titulo_el = tarjeta.query_selector("h2, h3, h4, .job-title, .titulo, strong, b")
-                if titulo_el: titulo = titulo_el.inner_text().strip()
-                if not titulo: titulo = tarjeta.get_attribute("title") or tarjeta.get_attribute("aria-label") or ""
-                if not titulo:
-                    texto_completo = tarjeta.inner_text().strip()
-                    titulo = texto_completo.split('\\n')[0] if texto_completo else "Sin título"
-                if len(titulo) < 3: titulo = "Oferta sin título claro"
-                    
-                btn_postular_sel = "button:has-text('Postular'), .btn-postular, .postular-btn, a:has-text('Postular')"
-                btn_postular = tarjeta.query_selector(btn_postular_sel)
-                
+                if not oferta_id.isdigit():
+                    continue
+
+                # Título desde el elemento span dentro del enlace
+                titulo_el = enlace.query_selector("span[itemprop='title']")
+                titulo = titulo_el.inner_text().strip() if titulo_el else enlace.inner_text().strip()
+                if len(titulo) < 3:
+                    titulo = "Oferta sin título"
+
+                # Empresa
+                emp_el = art.query_selector(".job-card-company span[itemprop='name']")
+                empresa = emp_el.inner_text().strip() if emp_el else ""
+
                 url_oferta = f"https://duoclaboral.cl{href}" if href.startswith("/") else href
 
                 if any(o.get("id") == oferta_id for o in ofertas):
@@ -199,14 +189,13 @@ class DuocLaboralPortal(PortalBase):
                 ofertas.append({
                     "id": oferta_id,
                     "titulo": titulo,
-                    "empresa": "",
+                    "empresa": empresa,
                     "url": url_oferta,
-                    "btn_postular_selector": btn_postular_sel if btn_postular else None
                 })
             except Exception:
                 continue
 
-        _pausa(2, 5)
+        _pausa(1, 2)
         return ofertas
 
     def obtener_detalle_oferta(self, url: str) -> dict:

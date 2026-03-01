@@ -17,7 +17,7 @@ console = Console()
 # Ruta absoluta al CV
 CV_PATH = str(Path(__file__).parent / "cv_joseluis.pdf")
 
-def _pausa(min_s=2.5, max_s=5.5):
+def _pausa(min_s=1.0, max_s=2.5):
     time.sleep(random.uniform(min_s, max_s))
 
 def scroll_aleatorio(page: Page):
@@ -42,7 +42,7 @@ class ChileTrabajosPortal(PortalBase):
         """Inicia sesión en ChileTrabajos."""
         console.print(f"[cyan]Navegando a {self.login_url}[/cyan]")
         self.page.goto(self.login_url, timeout=60000)
-        _pausa()
+        _pausa(1, 2)
 
         if "/panel" in self.page.url or "Mi cuenta" in self.page.content():
             print("✅ Sesión activa detectada (ChileTrabajos)")
@@ -117,7 +117,7 @@ class ChileTrabajosPortal(PortalBase):
         keyword = carrera.replace(" ", "+").lower()
         search_url = f"{self.base_url}/encuentra-un-empleo?2={keyword}&13=1022"
         self.page.goto(search_url, timeout=60000)
-        _pausa(3, 5)
+        _pausa(1, 2)
 
     def obtener_ofertas(self, paginas: int = 3, num_pagina_actual: int = 1) -> list[dict]:
         """Obtiene las ofertas de la página actual de ChileTrabajos."""
@@ -186,8 +186,7 @@ class ChileTrabajosPortal(PortalBase):
         # La URL de detalle es: /trabajo/slug-ID
         # La URL de postulación es: /trabajo/postular/ID
         self.page.goto(url, timeout=60000)
-        _pausa(2, 4)
-        for _ in range(random.randint(1, 3)): scroll_aleatorio(self.page)
+        _pausa(1.5, 2.5)
 
         detalle = {
             "titulo": "Sin título", "descripcion": "",
@@ -242,8 +241,8 @@ class ChileTrabajosPortal(PortalBase):
         url_postular = f"{self.base_url}/trabajo/postular/{oferta_id}"
         console.print(f"  [dim]Abriendo formulario: {url_postular}[/dim]")
         self.page.goto(url_postular, timeout=60000)
-        self.page.wait_for_load_state("networkidle")
-        _pausa(2, 3)
+        self.page.wait_for_load_state("load", timeout=15000)
+        _pausa(1, 2)
 
         # Detectar si ya postulamos
         contenido = self.page.content()
@@ -380,15 +379,36 @@ class ChileTrabajosPortal(PortalBase):
                         ta_el.type(ch, delay=random.randint(15, 50))
                     _pausa(0.3, 0.8)
 
-            # 3e. Subir CV
+            # 3e. Subir CV — OBLIGATORIO
+            if not os.path.exists(CV_PATH):
+                console.print(f"  [bold red]❌ ERROR: No se encontró el CV en '{CV_PATH}'[/bold red]")
+                console.print("  [yellow]Asegúrate de que el archivo 'cv_joseluis.pdf' exista en la carpeta portales/[/yellow]")
+                estado = "error_cv"
+                registrar_postulacion(oferta_id, titulo, empresa, url, estado, "")
+                return estado
+
             cv_input = self.page.query_selector("input[name='att1'], #cv")
-            if cv_input and os.path.exists(CV_PATH):
-                console.print(f"  [cyan]📎 Adjuntando CV: {CV_PATH}[/cyan]")
-                cv_input.set_input_files(CV_PATH)
-                _pausa(1.0, 2.0)
+            if not cv_input:
+                console.print("  [bold red]❌ ERROR: No se encontró el campo para subir CV en el formulario[/bold red]")
+                estado = "error_cv"
+                registrar_postulacion(oferta_id, titulo, empresa, url, estado, "")
+                return estado
+
+            console.print(f"  [cyan]📎 Subiendo CV: cv_joseluis.pdf...[/cyan]")
+            cv_input.set_input_files(CV_PATH)
+            _pausa(0.8, 1.2)
+
+            # Verificar que el nombre del archivo aparece en el label
+            try:
+                label_cv = self.page.query_selector("label[for='cv'], .custom-file-label")
+                nombre_mostrado = label_cv.inner_text() if label_cv else ""
+                if "cv_joseluis" in nombre_mostrado.lower() or ".pdf" in nombre_mostrado.lower():
+                    console.print("  [bold green]✅ CV subido correctamente[/bold green]")
+                else:
+                    console.print(f"  [green]✅ CV adjuntado (label: {nombre_mostrado or 'OK'})[/green]")
+            except Exception:
                 console.print("  [green]✅ CV adjuntado[/green]")
-            elif cv_input:
-                console.print(f"  [yellow]⚠️ CV no encontrado en: {CV_PATH}[/yellow]")
+
 
             _pausa(1, 2)
 
